@@ -1,0 +1,17 @@
+{
+  "name": "ros-line-client",
+  "private": true,
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.20",
+    "qrcode": "^1.5.4",
+    "tsx": "^4.19.4"
+  },
+  "devDependencies": {
+    "@types/qrcode": "^1.5.5",
+    "typescript": "^5.8.3"
+  },
+  "scripts": {
+    "start:wa": "yarn tsx src/index.ts",
+    "start:chat": "yarn tsx src/index.ts chat"
+  }
+}
