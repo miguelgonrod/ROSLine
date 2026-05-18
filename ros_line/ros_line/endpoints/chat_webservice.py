@@ -1,9 +1,11 @@
 from fastapi import APIRouter, HTTPException
 from fastapi_utils.cbv import cbv
 
+import base64
 import os
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
+import google.generativeai as genai
 
 """Chat endpoints sin utilizar helpers de memoria de LangChain.
 
@@ -238,6 +240,71 @@ def _extract_service_request(user_input: str):
     }
 
 
+def _is_image_attachment(mime_type: str | None, file_base64: str | None) -> bool:
+    return bool(mime_type and mime_type.startswith("image/") and file_base64)
+
+
+def _is_quota_error(error: Exception) -> bool:
+    error_text = str(error).lower()
+    return "429" in error_text or "quota" in error_text or "rate limit" in error_text
+
+
+def _analyze_rqt_graph_image(api_key: str, caption: str, mime_type: str, file_base64: str) -> str:
+    configure = getattr(genai, "configure")
+    generative_model = getattr(genai, "GenerativeModel")
+
+    configure(api_key=api_key)
+    model_candidates = [
+        model_name.strip()
+        for model_name in os.getenv(
+            "ROSLINE_IMAGE_MODELS",
+            "gemini-2.5-flash,gemini-3.0-Flash",
+        ).split(",")
+        if model_name.strip()
+    ]
+
+    prompt = (
+        "Analiza esta imagen como si fuera una captura de rqt_graph de ROS 2. "
+        "Identifica los nodos visibles, los tópicos, quién publica y quién suscribe, "
+        "y resume la arquitectura general del grafo. "
+        "Si detectas relaciones que sugieran un flujo de datos importante, explícalas. "
+        "Si la imagen no parece ser un rqt_graph, dilo claramente y describe lo que sí ves. "
+        "Responde en español, sin Markdown, con frases breves y concretas."
+    )
+
+    if caption:
+        prompt += f"\n\nContexto adicional del usuario: {caption}"
+
+    image_bytes = base64.b64decode(file_base64)
+    last_error: Exception | None = None
+
+    for model_name in model_candidates:
+        try:
+            model = generative_model(model_name)
+            response = model.generate_content(
+                [
+                    prompt,
+                    {"mime_type": mime_type, "data": image_bytes},
+                ]
+            )
+
+            reply = (getattr(response, "text", "") or "").strip()
+            if reply:
+                return reply
+        except Exception as error:
+            last_error = error
+            if not _is_quota_error(error):
+                raise
+
+    if last_error is not None and _is_quota_error(last_error):
+        return (
+            "No pude analizar la imagen porque se agotó la cuota del modelo de visión. "
+            "Prueba de nuevo en unos minutos o cambia la variable ROSLINE_IMAGE_MODELS para usar otro modelo."
+        )
+
+    return "No pude interpretar la imagen adjunta. Si quieres, reenvíala con más resolución o una captura más centrada del rqt_graph."
+
+
 @cbv(chat_webservice_api_router)
 class ChatWebService:
     # --- v1.0: Chat con memoria en sesión ---
@@ -291,8 +358,39 @@ class ChatWebService:
         # Modelo base
         llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash")
 
+        has_image_attachment = _is_image_attachment(request.mime_type, request.file_base64)
+        user_input = request.message.strip() if request.message else ""
+
+        if has_image_attachment:
+            try:
+                reply = _analyze_rqt_graph_image(
+                    api_key=api_key,
+                    caption=user_input,
+                    mime_type=request.mime_type or "image/*",
+                    file_base64=request.file_base64 or "",
+                )
+                history_input = user_input or "Imagen de rqt_graph adjunta"
+                _append_message(request.user_id, "human", f"{history_input} [Archivo adjunto: {request.mime_type}]")
+                _append_message(request.user_id, "ai", reply)
+                return {
+                    "userintention": "Other",
+                    "analysis_type": "rqt_graph_image",
+                    "reply": reply,
+                }
+            except Exception as e:
+                fallback_reply = (
+                    "No pude analizar la imagen adjunta. "
+                    f"Error: {str(e)}"
+                )
+                _append_message(request.user_id, "human", f"{user_input} [Archivo adjunto: {request.mime_type}]")
+                _append_message(request.user_id, "ai", fallback_reply)
+                return {
+                    "userintention": "Other",
+                    "analysis_type": "rqt_graph_image",
+                    "reply": fallback_reply,
+                }
+
         # Registrar el mensaje actual en memoria y construir historial
-        user_input = request.message
         if request.mime_type and request.file_base64:
             user_input += f" [Archivo adjunto: {request.mime_type}]"
 
