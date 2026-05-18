@@ -1,5 +1,7 @@
 import P from "pino";
 import * as QRCode from "qrcode";
+import dotenv from "dotenv";
+import { SpeechClient } from "@google-cloud/speech";
 import {
   makeWASocket,
   useMultiFileAuthState,
@@ -13,12 +15,24 @@ import {
 
 
 //import makeWASocket, { downloadMediaMessage } from "@whiskeysockets/baileys"
-import {createWriteStream, readFileSync} from "fs";
+import { createWriteStream, readFileSync, unlinkSync } from "fs";
+import { promises as fs } from "fs";
+import { spawn } from "child_process";
 
 
 import { rmSync, existsSync } from "fs";
-import { join } from "path";
+import { join, resolve } from "path";
 import { tmpdir } from "os";
+
+const envPath = resolve(__dirname, "../../ros_line/resource/.env");
+dotenv.config({ path: envPath });
+
+if (process.env.GOOGLE_APPLICATION_CREDENTIALS?.startsWith("~")) {
+  process.env.GOOGLE_APPLICATION_CREDENTIALS = process.env.GOOGLE_APPLICATION_CREDENTIALS.replace(
+    /^~/,
+    process.env.HOME || ""
+  );
+}
 
 
 function fileToBase64(path: string): string {
@@ -26,9 +40,52 @@ function fileToBase64(path: string): string {
   return fileBuffer.toString('base64');
 }
 
+function deleteFileIfExists(path: string): void {
+  try {
+    unlinkSync(path);
+  } catch {
+    // Ignore cleanup errors.
+  }
+}
+
+function runCommand(command: string, args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const childProcess = spawn(command, args, { stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+
+    childProcess.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    childProcess.on("error", reject);
+    childProcess.on("close", (exitCode) => {
+      if (exitCode === 0) {
+        resolve();
+        return;
+      }
+
+      reject(new Error(`${command} failed with exit code ${exitCode}: ${stderr}`));
+    });
+  });
+}
+
+function getSpeechEncodingFromMimeType(mimeType: string): string {
+  if (mimeType.includes("ogg")) {
+    return "OGG_OPUS";
+  }
+  if (mimeType.includes("mpeg") || mimeType.includes("mp3")) {
+    return "MP3";
+  }
+  if (mimeType.includes("webm")) {
+    return "WEBM_OPUS";
+  }
+  return "ENCODING_UNSPECIFIED";
+}
+
 
 class WhatsAppHandler {
   private sock!: WASocket;
+  private readonly speechClient = new SpeechClient();
   private qrAttempts = 0;
   private readonly maxQrAttempts = 3;
   private saveCreds: () => Promise<void> | null;
@@ -91,6 +148,45 @@ class WhatsAppHandler {
       });
     });
   }
+
+  async transcribeAudio(filepath: string, mimeType: string): Promise<string> {
+    const audioBuffer = readFileSync(filepath);
+    const isOpusAudio = mimeType.includes("ogg") || mimeType.includes("opus") || mimeType.includes("webm");
+    let transcriptionSource = audioBuffer.toString("base64");
+    let configEncoding = getSpeechEncodingFromMimeType(mimeType) as any;
+    let sampleRateHertz = isOpusAudio ? 48000 : 16000;
+
+    if (isOpusAudio && existsSync("/usr/bin/ffmpeg")) {
+      const wavPath = `${filepath}.wav`;
+      await runCommand("ffmpeg", ["-y", "-i", filepath, "-ac", "1", "-ar", "16000", "-f", "wav", wavPath]);
+      transcriptionSource = readFileSync(wavPath).toString("base64");
+      configEncoding = "LINEAR16";
+      sampleRateHertz = 16000;
+      deleteFileIfExists(wavPath);
+    }
+
+    const [response] = await this.speechClient.recognize({
+      audio: {
+        content: transcriptionSource,
+      },
+      config: {
+        encoding: configEncoding,
+        sampleRateHertz,
+        languageCode: process.env.GSPEECH_LANGUAGE_CODE || "es-ES",
+        model: process.env.GSPEECH_MODEL || "latest_short",
+        useEnhanced: true,
+        enableAutomaticPunctuation: true,
+      },
+    });
+
+    return (
+      response.results
+        ?.map((result) => result.alternatives?.[0]?.transcript || "")
+        .join(" ")
+        .trim() || ""
+    );
+  }
+
   /**
    * Maneja los mensajes entrantes y los muestra en la consola.
    * @param m - El objeto de mensajes recibido.
@@ -116,7 +212,12 @@ class WhatsAppHandler {
           console.log("Tipo de mensaje:", messageType);
           let  mime_type = "";
           let filename = "";
-          let img_caption = "";
+          let message = msg.message.imageMessage?.caption ||
+                        msg.message.conversation ||
+                        msg.message.extendedTextMessage?.text ||
+                        "No texto disponible";
+          let shouldSendFile = false;
+          let transcribedAudio = "";
           
           if (messageType === 'imageMessage') {
             mime_type = msg.message.imageMessage.mimetype;
@@ -135,6 +236,7 @@ class WhatsAppHandler {
     
             // save the image file locally and wait for it to finish
             await this.downloadAndSaveMedia(stream, filename);
+            shouldSendFile = true;
           }
           if (messageType === 'audioMessage') {
             mime_type = msg.message.audioMessage.mimetype;
@@ -152,6 +254,21 @@ class WhatsAppHandler {
   
             // save the audio file locally and wait for it to finish
             await this.downloadAndSaveMedia(stream, filename);
+
+            try {
+              transcribedAudio = await this.transcribeAudio(filename, mime_type);
+              console.log("🗣️ Audio transcrito:", transcribedAudio || "[vacío]");
+              if (transcribedAudio.trim()) {
+                message = transcribedAudio;
+              } else {
+                transcribedAudio = "";
+              }
+            } catch (error) {
+              console.error("❌ Error transcribiendo audio con Google Speech:", error);
+              message = "No pude transcribir el audio. Si quieres, reenvíalo como texto.";
+            } finally {
+              deleteFileIfExists(filename);
+            }
           }
 
           console.log(
@@ -163,18 +280,13 @@ class WhatsAppHandler {
 
           this.sock.readMessages([msg.key]);
 
-          const message = msg.message.imageMessage?.caption ||
-                          msg.message.conversation ||
-                          msg.message.extendedTextMessage?.text ||
-                          "No texto disponible";
-
-
           console.log("🔄 Enviando mensaje a la API...");
           console.log("📤 Payload:", {
             message: message,
             user_id: msg.key.remoteJid,
             mime_type: mime_type,
-            has_file: !!mime_type
+            has_file: shouldSendFile,
+            transcribed_audio: !!transcribedAudio
           });
 
           // Crear AbortController para timeout
@@ -189,8 +301,8 @@ class WhatsAppHandler {
             body: JSON.stringify({
               message: message,
               user_id: msg.key.remoteJid,
-              mime_type: mime_type || null,
-              file_base64: mime_type ? fileToBase64(filename) : null
+                mime_type: shouldSendFile ? mime_type || null : null,
+                file_base64: shouldSendFile ? fileToBase64(filename) : null
             }),
             redirect: "follow",
             signal: controller.signal
