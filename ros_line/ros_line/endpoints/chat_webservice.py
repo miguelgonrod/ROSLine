@@ -16,6 +16,7 @@ from ros_line.endpoints.actions.agent import RosAgent
 
 import rclpy
 import threading
+import re
 
 # --- Configuración de entorno ---
 # Buscar archivo .env en la carpeta resource
@@ -71,6 +72,33 @@ def _history_as_text(user_id: str) -> str:
         elif msg.get("role") == "ai":
             lines.append(f"Asistente: {msg.get('content', '')}")
     return "\n".join(lines)
+
+
+def _detect_direct_intention(user_input: str):
+    text = user_input.strip().lower()
+
+    if re.search(r"\b(det[ée]n|para|stop|frena|alto)\b", text):
+        return "Stop_robot"
+
+    if re.search(r"\b(t[óo]picos?|topics?|lista\s+de\s+t[óo]picos?)\b", text):
+        return "List_topics"
+
+    if re.search(r"\b(nodos?|nodes?|lista\s+de\s+nodos?)\b", text):
+        return "List_nodes"
+
+    if re.search(r"\b(servicios?|services?|lista\s+de\s+servicios?)\b", text):
+        return "List_services"
+
+    if re.search(r"\b(info|informaci[óo]n|estado|diagn[oó]stico|bater[ií]a|odometr[ií]a|posici[óo]n)\b", text):
+        return "Query_state"
+
+    move_keywords = (
+        r"\b(mueve|mover|avanza|avanzar|retrocede|retroceder|gira|girar|turn|move|forward|backward|left|right)\b"
+    )
+    if re.search(move_keywords, text):
+        return "Move_robot"
+
+    return None
 
 
 @cbv(chat_webservice_api_router)
@@ -205,6 +233,12 @@ class ChatWebService:
         _append_message(request.user_id, "human", user_input)
         history_text = _history_as_text(request.user_id)
 
+        direct_intention = _detect_direct_intention(user_input)
+        if direct_intention:
+            user_intention = direct_intention
+        else:
+            user_intention = None
+
         # Esquema de intención + clasificador estructurado
         intention_schema = {
             "title": "UserIntention",
@@ -266,9 +300,10 @@ class ChatWebService:
         )
 
 
-        result = model_with_structure.invoke(classify_text)
-        print(result)
-        user_intention = result[0]["args"].get("userintention")
+        if user_intention is None:
+            result = model_with_structure.invoke(classify_text)
+            print(result)
+            user_intention = result[0]["args"].get("userintention")
 
         if user_intention == "Other":
             # Rama 'Other': respuesta general con memoria y conocimiento de ROS 2
