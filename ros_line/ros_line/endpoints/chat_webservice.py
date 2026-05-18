@@ -28,6 +28,8 @@ chat_webservice_api_router = APIRouter()
 
 # Memoria en proceso por usuario: { user_id: [ {"role": "human"|"ai", "content": str }, ... ] }
 _memory_store = {}
+_history_window_size = int(os.getenv("ROSLINE_HISTORY_WINDOW_SIZE", "8"))
+_max_memory_messages = int(os.getenv("ROSLINE_MAX_MEMORY_MESSAGES", "24"))
 
 # Agente ROS global
 _ros_agent = None
@@ -62,11 +64,17 @@ def _get_history(user_id: str):
 def _append_message(user_id: str, role: str, content: str) -> None:
     history = _get_history(user_id)
     history.append({"role": role, "content": content})
+    if len(history) > _max_memory_messages:
+        del history[:-_max_memory_messages]
 
 
-def _history_as_text(user_id: str) -> str:
+def _history_as_text(user_id: str, limit: int | None = None) -> str:
     lines = []
-    for msg in _get_history(user_id):
+    history = _get_history(user_id)
+    if limit is not None:
+        history = history[-limit:]
+
+    for msg in history:
         if msg.get("role") == "human":
             lines.append(f"Usuario: {msg.get('content', '')}")
         elif msg.get("role") == "ai":
@@ -101,6 +109,135 @@ def _detect_direct_intention(user_input: str):
     return None
 
 
+def _extract_robot_name(user_input: str) -> str:
+    text = user_input.lower()
+    patterns = [
+        r"\b(robot\s*\d+[\w-]*)\b",
+        r"\b(turtlebot\s*\d+[\w-]*)\b",
+        r"\b(tb\s*\d+[\w-]*)\b",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1).replace(" ", "")
+
+    return ""
+
+
+def _extract_robot_name_with_llm(llm, user_input: str) -> str:
+    prompt_text = (
+        "Extrae solo el nombre del robot mencionado en el mensaje. "
+        "Responde únicamente con el nombre exacto del robot o con NONE si no hay un robot específico.\n\n"
+        f"Mensaje: {user_input}"
+    )
+
+    try:
+        result = llm.invoke(prompt_text)
+        robot_name = getattr(result, "content", str(result)).strip()
+        if not robot_name or robot_name.upper() == "NONE":
+            return ""
+
+        robot_name = robot_name.strip().strip(". ,;:!\"'[]{}()")
+        return robot_name.replace(" ", "")
+    except Exception as e:
+        print(f"Error extrayendo nombre de robot con LLM: {e}")
+        return ""
+
+
+def _extract_number(user_input: str) -> float | None:
+    match = re.search(r"-?\d+(?:[\.,]\d+)?", user_input)
+    if not match:
+        return None
+
+    return float(match.group(0).replace(",", "."))
+
+
+def _extract_movement_request(user_input: str):
+    text = user_input.lower()
+    robot_name = _extract_robot_name(text)
+    robot_specified = bool(robot_name)
+    magnitude = _extract_number(text)
+    linear_x = 0.0
+    linear_y = 0.0
+    angular_z = 0.0
+
+    if re.search(r"\b(izquierda|left|gira\s+izquierda|turn\s+left)\b", text):
+        angular_z = abs(magnitude) if magnitude is not None else 0.5
+    elif re.search(r"\b(derecha|right|gira\s+derecha|turn\s+right)\b", text):
+        angular_z = -(abs(magnitude) if magnitude is not None else 0.5)
+    elif re.search(r"\b(atr[áa]s|retrocede|backward|backwards)\b", text):
+        linear_x = -(abs(magnitude) if magnitude is not None else 0.2)
+    elif re.search(r"\b(adelante|avanza|forward)\b", text):
+        linear_x = abs(magnitude) if magnitude is not None else 0.2
+
+    if abs(linear_x) > 2.0:
+        linear_x = 2.0 if linear_x > 0 else -2.0
+
+    if abs(angular_z) > 3.14:
+        angular_z = 3.14 if angular_z > 0 else -3.14
+
+    return {
+        "robot_specified": robot_specified,
+        "robot_name": robot_name,
+        "linear_x": linear_x,
+        "linear_y": linear_y,
+        "angular_z": angular_z,
+        "movement_description": user_input.strip(),
+    }
+
+
+def _extract_info_request(user_input: str):
+    text = user_input.lower()
+    target_name = ""
+
+    match = re.search(r"(/[^\s,.;]+)", text)
+    if match:
+        target_name = match.group(1)
+    else:
+        words_after_keywords = re.search(
+            r"(?:info(?:rmación)?|estado|diagn[oó]stico|sobre)\s+(?:del\s+|de\s+|la\s+|el\s+)?(.+)$",
+            text,
+        )
+        if words_after_keywords:
+            target_name = words_after_keywords.group(1).strip().split()[0]
+
+    if any(keyword in text for keyword in ["tópico", "topico", "topic", "topics"]):
+        info_type = "topic_info"
+    elif any(keyword in text for keyword in ["nodo", "node", "nodos"]):
+        info_type = "node_info"
+    elif any(keyword in text for keyword in ["servicio", "service", "servicios"]):
+        info_type = "service_info"
+    elif any(keyword in text for keyword in ["mensaje", "msg", "tipo de mensaje"]):
+        info_type = "message_type"
+    else:
+        info_type = "general_info"
+
+    return {"info_type": info_type, "target_name": target_name}
+
+
+def _extract_service_request(user_input: str):
+    text = user_input.lower()
+    service_name = ""
+
+    match = re.search(r"(/[^\s,.;]+)", text)
+    if match:
+        service_name = match.group(1)
+    else:
+        words_after_keywords = re.search(
+            r"(?:servicio|service)\s+(?:del\s+|de\s+|la\s+|el\s+)?(.+)$",
+            text,
+        )
+        if words_after_keywords:
+            service_name = words_after_keywords.group(1).strip().split()[0]
+
+    return {
+        "service_name": service_name,
+        "service_type": "",
+        "parameters": "",
+    }
+
+
 @cbv(chat_webservice_api_router)
 class ChatWebService:
     # --- v1.0: Chat con memoria en sesión ---
@@ -114,85 +251,16 @@ class ChatWebService:
         # Modelo y prompt del sistema
         llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash")
 
-        system_prompt = """ROL:
-            ROSLine, un asistente conversacional inteligente diseñado para interactuar
-            con sistemas ROS 2 mediante lenguaje natural a través de WhatsApp. Actúa como
-            una interfaz entre el usuario y ROS 2, capaz de interpretar mensajes,
-            generar comandos ROS 2 y ofrecer retroalimentación clara sobre el estado del robot.
+        system_prompt = """ROL: ROSLine — asistente conversacional para controlar y consultar robots ROS 2.
 
-            TAREA:
-            Mantener una conversación amigable y profesional con el usuario sobre ROS 2.
-            Siempre comenzar con un saludo breve y pedir el nombre del usuario. 
-            Después del saludo, presentarte brevemente como ROSLine en 1–2 frases, 
-            explicando que ayudas a controlar y monitorear robots ROS 2 mediante chat.
-            Luego, interpretar y responder de forma clara las solicitudes del usuario 
-            usando el contexto disponible de ROS 2 o las acciones compatibles.
+    TAREA: interpreta mensajes del usuario y responde de forma clara y breve. Para órdenes operativas, extrae intención y parámetros; no inventes comandos ni devuelvas líneas de CLI.
 
-            CONTEXTO:
-            ROSLine está pensado para desarrolladores, estudiantes y entusiastas de la robótica 
-            que desean manejar robots ROS 2 utilizando lenguaje natural a través de WhatsApp.
-            Su objetivo es hacer la interacción con robots más intuitiva, accesible e inteligente.
-
-            Capacidades principales:
-            1. Consultas del sistema ROS 2:
-            - Listar tópicos, nodos y servicios activos.
-            - Obtener información sobre tipos de mensajes o parámetros.
-            - Consultar el estado del robot o diagnósticos del sistema.
-
-            2. Ejecución de comandos:
-            - Enviar comandos de velocidad o movimiento mediante tópicos como /cmd_vel.
-            - Activar acciones y servicios de ROS 2.
-            - Realizar tareas como avanzar, girar o detener al robot.
-
-            3. Interpretación en lenguaje natural:
-            - Entender lenguaje humano y traducirlo en comandos ROS 2 estructurados.
-            - Reconocer contexto (tópicos, nodos, direcciones, distancias, etc.).
-            - Dar confirmaciones o retroalimentación tras ejecutar comandos.
-
-            4. Capa de integración:
-            - Comunicarse con la API de Gemini para razonamiento y comprensión del lenguaje.
-            - Conectar la salida con un backend capaz de ejecutar comandos ROS 2 reales.
-
-            Usuarios objetivo:
-            - Desarrolladores y roboticistas que trabajan con ROS 2.
-            - Estudiantes que aprenden sobre robótica e inteligencia artificial.
-            - Investigadores interesados en interacción humano-robot.
-
-            Propuesta de valor:
-            - Controla tu robot usando lenguaje natural desde WhatsApp.
-            - Simplifica el uso de ROS 2 sin necesidad de una terminal.
-            - Integra razonamiento basado en IA con control robótico real.
-            - Convierte ROS 2 en una experiencia más conversacional y accesible.
-
-            Estilo de comunicación:
-            - Amigable, preciso y técnicamente claro.
-            - Siempre útil, conciso y profesional.
-            - Cercano y motivador, enfocado en robótica y ROS 2.
-
-            RESTRICCIONES:
-            - Nunca inventar comandos o acciones de ROS 2 que no existan.
-            - Solo proporcionar información basada en funcionalidades reales de ROS 2.
-            - Mantener las respuestas cortas y relevantes al contexto.
-            - Hablar siempre en primera persona como "ROSLine".
-
-            POLÍTICA DE RESPUESTA:
-            - Responder en 2–4 frases como máximo.
-            - Siempre comenzar con un saludo y pedir el nombre del usuario.
-            - Después del saludo, presentarte brevemente como el asistente ROSLine.
-            - Luego interpretar y responder la solicitud relacionada con ROS 2.
-            - Si no estás seguro de un comando, indícalo claramente en lugar de inventar.
-
-            INSTRUCCIONES ADICIONALES:
-            - Siempre saluda primero y pide el nombre del usuario.
-            - Mantén todos los mensajes claros, breves y enfocados en ROS 2.
-            - Usa un tono profesional pero conversacional.
-            - NO uses formato Markdown (**, *, _, etc.) ya que WhatsApp no lo soporta.
-            - Usa texto plano únicamente.
-            """
+    RESPUESTA: máximo 2–3 frases en texto plano. Si es primera interacción, saluda y pide el nombre. No uses Markdown. Si dudas, pide aclaración.
+    """
 
 
         # Construcción de historial y prompt como texto
-        history_text = _history_as_text(request.user_id)
+        history_text = _history_as_text(request.user_id, _history_window_size)
         user_input = request.message
         _append_message(request.user_id, "human", user_input)
 
@@ -225,13 +293,11 @@ class ChatWebService:
 
         # Registrar el mensaje actual en memoria y construir historial
         user_input = request.message
-        
-        # Agregar información sobre archivo si está presente
         if request.mime_type and request.file_base64:
             user_input += f" [Archivo adjunto: {request.mime_type}]"
-        
+
         _append_message(request.user_id, "human", user_input)
-        history_text = _history_as_text(request.user_id)
+        history_text = _history_as_text(request.user_id, _history_window_size)
 
         direct_intention = _detect_direct_intention(user_input)
         if direct_intention:
@@ -242,10 +308,7 @@ class ChatWebService:
         # Esquema de intención + clasificador estructurado
         intention_schema = {
             "title": "UserIntention",
-            "description": (
-                "Clasifica la intención del mensaje del usuario relacionado con robótica y ROS 2. "
-                "Devuelve solo una de las etiquetas permitidas."
-            ),
+            "description": "Clasifica la intención del mensaje del usuario relacionado con robótica y ROS 2.",
             "type": "object",
             "properties": {
                 "userintention": {
@@ -259,19 +322,8 @@ class ChatWebService:
                         "Stop_robot",
                         "Call_service",
                         "Query_state",
-                        "Other"
+                        "Other",
                     ],
-                    "description": (
-                        "'List_topics': cuando el usuario solicita listar los tópicos activos de ROS 2. "
-                        "'List_nodes': cuando el usuario quiere conocer los nodos actualmente activos. "
-                        "'List_services': cuando el usuario desea ver los servicios disponibles. "
-                        "'Get_info': cuando el usuario pide información sobre un tópico, nodo o parámetro específico. "
-                        "'Move_robot': cuando el usuario da una orden de movimiento (ej. avanzar, girar, moverse hacia un punto). "
-                        "'Stop_robot': cuando el usuario solicita detener el movimiento o cancelar una acción. "
-                        "'Call_service': cuando el usuario pide ejecutar un servicio o acción de ROS 2. "
-                        "'Query_state': cuando el usuario pregunta por el estado del robot (batería, posición, diagnóstico, etc.). "
-                        "'Other': conversación casual o tema no relacionado directamente con ROS 2."
-                    ),
                 }
             },
             "required": ["userintention"],
@@ -303,7 +355,11 @@ class ChatWebService:
         if user_intention is None:
             result = model_with_structure.invoke(classify_text)
             print(result)
-            user_intention = result[0]["args"].get("userintention")
+            if isinstance(result, list):
+                first_result = result[0]
+                user_intention = first_result.get("args", {}).get("userintention") if isinstance(first_result, dict) else getattr(first_result, "userintention", None)
+            else:
+                user_intention = getattr(result, "userintention", None)
 
         if user_intention == "Other":
             # Rama 'Other': respuesta general con memoria y conocimiento de ROS 2
@@ -369,7 +425,7 @@ class ChatWebService:
 
 
             # Usar memoria propia y construir prompt plano
-            history_text = _history_as_text(request.user_id)
+            history_text = _history_as_text(request.user_id, _history_window_size)
             user_input = request.message
 
             prompt_text = (
@@ -505,82 +561,37 @@ class ChatWebService:
         elif user_intention == "Get_info":
             # Rama 'Get_info': Obtener información específica sobre tópicos, nodos o servicios
             user_input = request.message
-            
-            # Extraer qué información específica quiere el usuario
-            info_extraction_schema = {
-                "title": "ROSInfoRequest",
-                "description": "Extrae qué información específica de ROS 2 quiere el usuario",
-                "type": "object",
-                "properties": {
-                    "info_type": {
-                        "type": "string",
-                        "enum": ["topic_info", "node_info", "service_info", "message_type", "general_info"],
-                        "description": "Tipo de información solicitada"
-                    },
-                    "target_name": {
-                        "type": "string", 
-                        "description": "Nombre del tópico, nodo o servicio sobre el que quiere información"
-                    }
-                },
-                "required": ["info_type"],
-                "additionalProperties": False,
-            }
-            
-            info_extractor = llm.with_structured_output(info_extraction_schema)
-            extract_text = f"Extrae qué tipo de información ROS 2 solicita el usuario.\n\nMensaje: {user_input}"
-            
-            try:
-                extracted = info_extractor.invoke(extract_text)
-                info_data = extracted[0]["args"] if isinstance(extracted, list) else extracted
-                
-                info_type = info_data.get("info_type", "general_info")
-                target_name = info_data.get("target_name", "")
-                
-                # Ejecutar comando ROS usando el agente
-                ros_agent = _get_ros_agent()
-                if ros_agent and target_name:
-                    try:
-                        if info_type in ["topic_info", "node_info", "service_info"]:
-                            # Usar el método get_info del agente
-                            ros_type = info_type.replace("_info", "")  # topic, node, service
-                            info_output = ros_agent.get_info(ros_type, target_name)
-                            
-                            reply_text = (
-                                f"Información sobre {target_name}:\n"
-                                f"{info_output if info_output else 'No se pudo obtener la información'}\n\n"
-                                "¿Necesitas más detalles?"
-                            )
-                            ros_command = f"ros2 {ros_type} info {target_name}"
-                            status = "success"
-                        else:
-                            reply_text = (
-                                f"Tipo de información no soportado: {info_type}\n"
-                                "Tipos disponibles: topic_info, node_info, service_info"
-                            )
-                            ros_command = "ros2 --help"
-                            status = "unsupported_type"
-                    except Exception as e:
-                        reply_text = (
-                            f"Error al obtener información sobre {target_name}:\n"
-                            f"Error: {str(e)}"
-                        )
-                        ros_command = f"ros2 {info_type.replace('_info', '')} info {target_name}"
-                        status = "error"
-                else:
+            info_data = _extract_info_request(user_input)
+            info_type = info_data.get("info_type", "general_info")
+            target_name = info_data.get("target_name", "")
+
+            ros_agent = _get_ros_agent()
+            if ros_agent and target_name and info_type in ["topic_info", "node_info", "service_info"]:
+                try:
+                    ros_type = info_type.replace("_info", "")
+                    info_output = ros_agent.get_info(ros_type, target_name)
+
                     reply_text = (
-                        "Necesito más información específica sobre qué quieres consultar.\n"
-                        "Ejemplo: 'información del tópico /cmd_vel' o 'info del nodo /turtlesim'"
+                        f"Información sobre {target_name}:\n"
+                        f"{info_output if info_output else 'No se pudo obtener la información'}\n\n"
+                        "¿Necesitas más detalles?"
                     )
-                    ros_command = "ros2 --help"
-                    status = "need_more_info"
-                
-            except Exception as e:
-                ros_command = "ros2 --help"
+                    ros_command = f"ros2 {ros_type} info {target_name}"
+                    status = "success"
+                except Exception as e:
+                    reply_text = (
+                        f"Error al obtener información sobre {target_name}:\n"
+                        f"Error: {str(e)}"
+                    )
+                    ros_command = f"ros2 {info_type.replace('_info', '')} info {target_name}"
+                    status = "error"
+            else:
                 reply_text = (
-                    "Error al procesar la solicitud de información.\n"
-                    "Intenta ser más específico sobre qué información necesitas."
+                    "Necesito más información específica sobre qué quieres consultar.\n"
+                    "Ejemplo: 'información del tópico /cmd_vel' o 'info del nodo /turtlesim'"
                 )
-                status = "extraction_error"
+                ros_command = "ros2 --help"
+                status = "need_more_info"
             
             _append_message(request.user_id, "ai", reply_text)
             return {
@@ -593,134 +604,42 @@ class ChatWebService:
         elif user_intention == "Move_robot":
             # Rama 'Move_robot': Generar comandos de movimiento para el robot
             user_input = request.message
-            
-            # Combinar detección de robot y parámetros de movimiento en una sola llamada
-            combined_schema = {
-                "title": "RobotMovementAnalysis",
-                "description": "Analiza el mensaje para extraer robot específico y parámetros de movimiento",
-                "type": "object",
-                "properties": {
-                    "robot_specified": {
-                        "type": "boolean",
-                        "description": "True si el usuario menciona un robot específico (ej: turtlebot1, robot2, etc.)"
-                    },
-                    "robot_name": {
-                        "type": "string",
-                        "description": "Nombre del robot especificado por el usuario"
-                    },
-                    "linear_x": {
-                        "type": "number",
-                        "description": "Velocidad lineal en X (adelante/atrás) en m/s. Positivo = adelante, Negativo = atrás"
-                    },
-                    "linear_y": {
-                        "type": "number", 
-                        "description": "Velocidad lineal en Y (izquierda/derecha) en m/s para robots omnidireccionales"
-                    },
-                    "angular_z": {
-                        "type": "number",
-                        "description": "Velocidad angular en Z (giro) en rad/s. Positivo = giro izquierda, Negativo = giro derecha"
-                    },
-                    "movement_description": {
-                        "type": "string",
-                        "description": "Descripción del movimiento solicitado"
-                    }
-                },
-                "required": ["robot_specified", "linear_x", "angular_z", "movement_description"],
-                "additionalProperties": False,
-            }
-            
-            combined_extractor = llm.with_structured_output(combined_schema)
-            extract_text = (
-                "Analiza el mensaje del usuario y extrae:\n"
-                "1. Si especifica un robot particular (nombres como 'turtlebot1', 'robot2', etc.)\n"
-                "2. Los parámetros de movimiento para ROS 2\n\n"
-                "Para movimientos:\n"
-                "- Velocidades lineales entre -2.0 y 2.0 m/s\n"
-                "- Velocidades angulares entre -3.14 y 3.14 rad/s\n"
-                "- 'adelante/avanzar' = linear_x positivo\n"
-                "- 'atrás/retroceder' = linear_x negativo\n"
-                "- 'girar izquierda' = angular_z positivo\n"
-                "- 'girar derecha' = angular_z negativo\n\n"
-                f"Mensaje del usuario: {user_input}"
-            )
-            
-            try:
-                extracted = combined_extractor.invoke(extract_text)
-                combined_data = extracted[0]["args"] if isinstance(extracted, list) else extracted
-                
-                robot_specified = combined_data.get("robot_specified", False)
-                robot_name = combined_data.get("robot_name", "")
-                linear_x = combined_data.get("linear_x", 0.0)
-                linear_y = combined_data.get("linear_y", 0.0) 
-                angular_z = combined_data.get("angular_z", 0.0)
-                description = combined_data.get("movement_description", "Movimiento")
-                
-                # Determinar el tópico a usar
-                cmd_vel_topic = "/cmd_vel"  # Valor por defecto
-                topic_status = "default"
-                
-                if robot_specified and robot_name:
-                    # Obtener lista de tópicos y buscar el correcto (solo una llamada más)
-                    ros_agent = _get_ros_agent()
-                    if ros_agent:
-                        try:
-                            topics_output = ros_agent.list_topics()
-                            if topics_output and not topics_output.startswith("Error"):
-                                # Análisis rápido de tópicos con Gemini
-                                topic_analysis_schema = {
-                                    "title": "TopicAnalysis",
-                                    "description": "Encuentra el tópico cmd_vel del robot especificado",
-                                    "type": "object",
-                                    "properties": {
-                                        "found_topic": {
-                                            "type": "boolean",
-                                            "description": "True si se encontró un tópico cmd_vel para el robot"
-                                        },
-                                        "topic_name": {
-                                            "type": "string",
-                                            "description": "Nombre completo del tópico encontrado"
-                                        }
-                                    },
-                                    "required": ["found_topic"],
-                                    "additionalProperties": False,
-                                }
-                                
-                                topic_analyzer = llm.with_structured_output(topic_analysis_schema)
-                                analysis_text = (
-                                    f"Busca el tópico cmd_vel para '{robot_name}' en:\n{topics_output}\n"
-                                    f"Patrones: /{robot_name}/cmd_vel, /{robot_name}_cmd_vel, etc."
-                                )
-                                
-                                try:
-                                    topic_analysis = topic_analyzer.invoke(analysis_text)
-                                    analysis_data = topic_analysis[0]["args"] if isinstance(topic_analysis, list) else topic_analysis
-                                    
-                                    if analysis_data.get("found_topic", False) and analysis_data.get("topic_name", ""):
-                                        cmd_vel_topic = analysis_data.get("topic_name", "/cmd_vel")
-                                        topic_status = "found_specific"
-                                    else:
-                                        topic_status = "robot_not_found"
-                                        
-                                except Exception as e:
-                                    print(f"Error en análisis de tópicos: {e}")
-                                    topic_status = "analysis_error"
+            movement_data = _extract_movement_request(user_input)
+            robot_specified = movement_data["robot_specified"]
+            robot_name = movement_data["robot_name"]
+            linear_x = movement_data["linear_x"]
+            linear_y = movement_data["linear_y"]
+            angular_z = movement_data["angular_z"]
+            description = movement_data["movement_description"]
+
+            if not robot_name:
+                robot_name = _extract_robot_name_with_llm(llm, user_input)
+                robot_specified = bool(robot_name)
+
+            cmd_vel_topic = "/cmd_vel"
+            topic_status = "default"
+
+            if robot_specified and robot_name:
+                ros_agent = _get_ros_agent()
+                if ros_agent:
+                    try:
+                        topics_output = ros_agent.list_topics()
+                        if topics_output and not topics_output.startswith("Error"):
+                            for topic in topics_output.split("\n"):
+                                topic = topic.strip()
+                                if robot_name.lower() in topic.lower() and "cmd_vel" in topic.lower():
+                                    cmd_vel_topic = topic
+                                    topic_status = "found_specific"
+                                    break
                             else:
-                                topic_status = "topics_unavailable"
-                        except Exception as e:
-                            print(f"Error obteniendo tópicos: {e}")
-                            topic_status = "topics_error"
-                    else:
-                        topic_status = "ros_unavailable"
-                
-            except Exception as e:
-                print(f"Error en análisis combinado: {e}")
-                robot_specified = False
-                robot_name = ""
-                linear_x = 0.0
-                linear_y = 0.0
-                angular_z = 0.0
-                description = "Movimiento"
-                topic_status = "extraction_error"
+                                topic_status = "robot_not_found"
+                        else:
+                            topic_status = "topics_unavailable"
+                    except Exception as e:
+                        print(f"Error obteniendo tópicos: {e}")
+                        topic_status = "topics_error"
+                else:
+                    topic_status = "ros_unavailable"
             
             # Ejecutar movimiento usando el agente ROS con el tópico determinado
             ros_agent = _get_ros_agent()
@@ -796,71 +715,38 @@ class ChatWebService:
         elif user_intention == "Stop_robot":
             # Rama 'Stop_robot': Detener todos los movimientos del robot
             user_input = request.message
-            
-            # Detección optimizada de robot específico
-            robot_detection_schema = {
-                "title": "RobotStopAnalysis",
-                "description": "Detecta si el usuario especifica un robot particular para detener",
-                "type": "object",
-                "properties": {
-                    "robot_specified": {
-                        "type": "boolean",
-                        "description": "True si el usuario menciona un robot específico (ej: turtlebot1, robot2, etc.)"
-                    },
-                    "robot_name": {
-                        "type": "string",
-                        "description": "Nombre del robot especificado por el usuario"
-                    }
-                },
-                "required": ["robot_specified"],
-                "additionalProperties": False,
-            }
-            
-            robot_detector = llm.with_structured_output(robot_detection_schema)
-            detect_text = f"¿Especifica un robot particular para detener? Mensaje: {user_input}"
-            
-            try:
-                robot_detection = robot_detector.invoke(detect_text)
-                robot_data = robot_detection[0]["args"] if isinstance(robot_detection, list) else robot_detection
-                
-                robot_specified = robot_data.get("robot_specified", False)
-                robot_name = robot_data.get("robot_name", "")
-                
-                # Determinar el tópico a usar
-                cmd_vel_topic = "/cmd_vel"  # Valor por defecto
-                topic_status = "default"
-                
-                if robot_specified and robot_name:
-                    # Búsqueda rápida de tópico específico
-                    ros_agent = _get_ros_agent()
-                    if ros_agent:
-                        try:
-                            topics_output = ros_agent.list_topics()
-                            if topics_output and not topics_output.startswith("Error"):
-                                # Búsqueda simple de patrón
-                                for topic in topics_output.split('\n'):
-                                    topic = topic.strip()
-                                    if robot_name.lower() in topic.lower() and 'cmd_vel' in topic.lower():
-                                        cmd_vel_topic = topic
-                                        topic_status = "found_specific"
-                                        break
-                                else:
-                                    topic_status = "robot_not_found"
+            robot_name = _extract_robot_name(user_input)
+            if not robot_name:
+                robot_name = _extract_robot_name_with_llm(llm, user_input)
+            robot_specified = bool(robot_name)
+
+            cmd_vel_topic = "/cmd_vel"
+            topic_status = "default"
+
+            if robot_specified:
+                ros_agent = _get_ros_agent()
+                if ros_agent:
+                    try:
+                        topics_output = ros_agent.list_topics()
+                        if topics_output and not topics_output.startswith("Error"):
+                            for topic in topics_output.split("\n"):
+                                topic = topic.strip()
+                                if robot_name.lower() in topic.lower() and "cmd_vel" in topic.lower():
+                                    cmd_vel_topic = topic
+                                    topic_status = "found_specific"
+                                    break
                             else:
-                                topic_status = "topics_unavailable"
-                        except Exception as e:
-                            print(f"Error obteniendo tópicos: {e}")
-                            topic_status = "topics_error"
-                    else:
-                        topic_status = "ros_unavailable"
-                
-            except Exception as e:
-                print(f"Error en detección de robot: {e}")
-                robot_specified = False
-                robot_name = ""
-                topic_status = "detection_error"
+                                topic_status = "robot_not_found"
+                        else:
+                            topic_status = "topics_unavailable"
+                    except Exception as e:
+                        print(f"Error obteniendo tópicos: {e}")
+                        topic_status = "topics_error"
+                else:
+                    topic_status = "ros_unavailable"
             
             # Ejecutar comando de parada usando el agente ROS con el tópico determinado
+            robot_info = f" {robot_name}" if robot_specified and robot_name else ""
             ros_agent = _get_ros_agent()
             if ros_agent:
                 try:
@@ -931,93 +817,51 @@ class ChatWebService:
         elif user_intention == "Call_service":
             # Rama 'Call_service': Llamar a un servicio específico de ROS 2
             user_input = request.message
-            
-            # Extraer información del servicio a llamar
-            service_schema = {
-                "title": "ServiceCall",
-                "description": "Extrae información sobre el servicio ROS 2 a llamar",
-                "type": "object",
-                "properties": {
-                    "service_name": {
-                        "type": "string",
-                        "description": "Nombre del servicio a llamar"
-                    },
-                    "service_type": {
-                        "type": "string", 
-                        "description": "Tipo del servicio si se menciona"
-                    },
-                    "parameters": {
-                        "type": "string",
-                        "description": "Parámetros o argumentos para el servicio"
-                    }
-                },
-                "required": ["service_name"],
-                "additionalProperties": False,
-            }
-            
-            service_extractor = llm.with_structured_output(service_schema)
-            extract_text = f"Extrae el nombre del servicio ROS 2 que el usuario quiere llamar.\n\nMensaje: {user_input}"
-            
-            try:
-                extracted = service_extractor.invoke(extract_text)
-                service_data = extracted[0]["args"] if isinstance(extracted, list) else extracted
-                
-                service_name = service_data.get("service_name", "")
-                service_type = service_data.get("service_type", "")
-                parameters = service_data.get("parameters", "")
-                
-                # Ejecutar llamada al servicio usando el agente ROS
-                ros_agent = _get_ros_agent()
-                if ros_agent and service_name:
-                    try:
-                        # Nota: El método call_service del agente requiere el tipo de servicio y request
-                        # Por ahora solo mostramos que se intentaría llamar
-                        reply_text = (
-                            f"🔧 Preparando llamada al servicio: {service_name}\n"
-                            f"Tipo: {service_type if service_type else 'No especificado'}\n"
-                            f"Parámetros: {parameters if parameters else 'Ninguno'}\n\n"
-                            "Nota: La llamada al servicio requiere implementación específica del tipo de servicio."
-                        )
-                        ros_command = f"ros2 service call {service_name} {service_type} \"{parameters}\"" if parameters else f"ros2 service call {service_name} {service_type} {{}}"
-                        status = "partial_implementation"
-                        
-                    except Exception as e:
-                        reply_text = (
-                            f"❌ Error al preparar llamada al servicio: {service_name}\n"
-                            f"Error: {str(e)}"
-                        )
-                        ros_command = f"ros2 service call {service_name} {service_type}"
-                        status = "error"
-                elif service_name:
+            service_data = _extract_service_request(user_input)
+            service_name = service_data.get("service_name", "")
+            service_type = service_data.get("service_type", "")
+            parameters = service_data.get("parameters", "")
+
+            ros_agent = _get_ros_agent()
+            if ros_agent and service_name:
+                try:
                     reply_text = (
-                        f"⚠️ Agente ROS no disponible\n"
-                        f"Servicio solicitado: {service_name}\n"
-                        "Verifica que ROS 2 esté configurado correctamente."
+                        f"🔧 Preparando llamada al servicio: {service_name}\n"
+                        f"Tipo: {service_type if service_type else 'No especificado'}\n"
+                        f"Parámetros: {parameters if parameters else 'Ninguno'}\n\n"
+                        "Nota: La llamada al servicio requiere implementación específica del tipo de servicio."
+                    )
+                    ros_command = f"ros2 service call {service_name} {service_type} \"{parameters}\"" if parameters else f"ros2 service call {service_name} {service_type} {{}}"
+                    status = "partial_implementation"
+
+                except Exception as e:
+                    reply_text = (
+                        f"❌ Error al preparar llamada al servicio: {service_name}\n"
+                        f"Error: {str(e)}"
                     )
                     ros_command = f"ros2 service call {service_name} {service_type}"
-                    status = "ros_unavailable"
-                else:
-                    reply_text = (
-                        "❓ No pude identificar el servicio específico.\n"
-                        "Mostrando servicios disponibles..."
-                    )
-                    # Usar el agente para listar servicios
-                    if ros_agent:
-                        try:
-                            services_output = ros_agent.list_services()
-                            reply_text += f"\n\nServicios disponibles:\n{services_output}"
-                        except:
-                            pass
-                    ros_command = "ros2 service list"
-                    status = "service_not_found"
-                
-            except Exception as e:
-                ros_command = "ros2 service list"
+                    status = "error"
+            elif service_name:
                 reply_text = (
-                    "❌ Error al procesar la solicitud del servicio.\n"
+                    f"⚠️ Agente ROS no disponible\n"
+                    f"Servicio solicitado: {service_name}\n"
+                    "Verifica que ROS 2 esté configurado correctamente."
+                )
+                ros_command = f"ros2 service call {service_name} {service_type}"
+                status = "ros_unavailable"
+            else:
+                reply_text = (
+                    "❓ No pude identificar el servicio específico.\n"
                     "Mostrando servicios disponibles..."
                 )
-                status = "extraction_error"
+                if ros_agent:
+                    try:
+                        services_output = ros_agent.list_services()
+                        reply_text += f"\n\nServicios disponibles:\n{services_output}"
+                    except:
+                        pass
+                ros_command = "ros2 service list"
+                status = "service_not_found"
             
             _append_message(request.user_id, "ai", reply_text)
             return {
