@@ -1,0 +1,27 @@
+name: Python checks
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - documentation
+  workflow_dispatch:
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up ROS 2 Jazzy
+        uses: ros-tooling/setup-ros@v0.7
+        with:
+          required-ros-distributions: jazzy
+
+      - name: Install pytest
+        run: sudo apt-get update && sudo apt-get install -y python3-pytest
+
+      - name: Run Python checks
+        run: python3 -m pytest ros_line/test
