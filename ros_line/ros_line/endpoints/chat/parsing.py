@@ -2,8 +2,20 @@
 
 import re
 
+from typing import Any, TYPE_CHECKING
+if TYPE_CHECKING:
+    from langchain_google_genai import ChatGoogleGenerativeAI
 
-def detect_direct_intention(user_input: str):
+def detect_direct_intention(user_input: str) -> str | None:
+    """
+    Detect an specific request from the user, avoiding the excesive use of AI.
+
+    :param user_input: Original user text that triggered the intent.
+    :type user_input: str
+
+    :return: User intention or None if is a different request.
+    :rtype: str or None
+    """
     text = user_input.strip().lower()
 
     if re.search(r"\b(det[ée]n|para|stop|frena|alto)\b", text):
@@ -29,6 +41,15 @@ def detect_direct_intention(user_input: str):
 
 
 def extract_robot_name(user_input: str) -> str:
+    """
+    Search using regex if there is a known robot namespace.
+
+    :param user_input: Original user text that triggered the intent.
+    :type user_input: str
+
+    :return: Robot namespace if exists in known str, or empty if not.
+    :rtype: str or None
+    """
     text = user_input.lower()
     patterns = [
         r"\b(robot\s*\d+[\w-]*)\b",
@@ -44,7 +65,18 @@ def extract_robot_name(user_input: str) -> str:
     return ""
 
 
-def extract_robot_name_with_llm(llm, user_input: str) -> str:
+def extract_robot_name_with_llm(llm: "ChatGoogleGenerativeAI | Any", user_input: str) -> str:
+    """
+    Search using llm if there is a robot namespace.
+
+    :param llm: LLM client or interface used to extract information when needed.
+    :type llm: ChatGoogleGenerativeAI or Any
+    :param user_input: Original user text that triggered the intent.
+    :type user_input: str
+
+    :return: Robot namespace if exists in known str, or empty if not.
+    :rtype: str or None
+    """
     prompt_text = (
         "Extrae solo el nombre del robot mencionado en el mensaje. "
         "Responde únicamente con el nombre exacto del robot o con NONE si no hay un robot específico.\n\n"
@@ -65,6 +97,15 @@ def extract_robot_name_with_llm(llm, user_input: str) -> str:
 
 
 def extract_number(user_input: str) -> float | None:
+    """
+    Helper function that extracts the numeric value of a message.
+
+    :param user_input: Original user text that triggered the intent.
+    :type user_input: str
+
+    :return: Float value extracted from the message or None.
+    :rtype: float or None
+    """
     match = re.search(r"-?\d+(?:[\.,]\d+)?", user_input)
     if not match:
         return None
@@ -72,7 +113,16 @@ def extract_number(user_input: str) -> float | None:
     return float(match.group(0).replace(",", "."))
 
 
-def extract_movement_request(user_input: str):
+def extract_movement_request(user_input: str) -> dict:
+    """
+    Search using regex the direction to move the robot, and assigns a magnitude to construct the movement dict.
+
+    :param user_input: Original user text that triggered the intent.
+    :type user_input: str
+
+    :return: Dictionary with the namespace, and the movement direction.
+    :rtype: dict
+    """
     text = user_input.lower()
     robot_name = extract_robot_name(text)
     robot_specified = bool(robot_name)
@@ -106,7 +156,16 @@ def extract_movement_request(user_input: str):
     }
 
 
-def extract_info_request(user_input: str):
+def extract_info_request(user_input: str) -> dict:
+    """
+    Search using regex the type of data {topic, service, message, node} that we need to extract information.
+
+    :param user_input: Original user text that triggered the intent.
+    :type user_input: str
+
+    :return: Dictionary with the type of information and the name of the {topic, service, message, node}
+    :rtype: dict
+    """
     text = user_input.lower()
     target_name = ""
 

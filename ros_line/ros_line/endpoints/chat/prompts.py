@@ -71,6 +71,17 @@ GENERAL_SYSTEM_PROMPT = """ROLE:
 
 
 def build_classify_text(history_text: str, user_input: str) -> str:
+    """
+    Create a specific text to improve the LLM answer, using his functions, the history and the last message 
+
+    :param history_text: String with all the parsed LLM history
+    :type history_text: str
+    :param user_input: Original user text that triggered the intent.
+    :type user_input: str
+
+    :return: String with the prompt context for the LLM
+    :rtype: str
+    """
     return (
         "Eres un clasificador especializado en robótica y ROS 2. Lee la conversación y clasifica la intención "
         "estrictamente en una de las etiquetas: "
