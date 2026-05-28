@@ -19,7 +19,20 @@ def detect_direct_intention(user_input: str) -> str | None:
     """
     text = user_input.strip().lower()
 
-    if re.search(r'\b(det[ée]n|para|stop|frena|alto)\b', text):
+    info_request = re.search(
+        r'(informaci[óo]n|info|sobre|detalles?|estado|diagn[oó]stico)\b',
+        text,
+    )
+    specific_resource = re.search(
+        r'(t[óo]picos?|topics?|nodos?|nodes?|servicios?|services?|/[\w/-]+)\b',
+        text,
+    )
+
+    if info_request and specific_resource:
+        return 'Get_info'
+
+    # Avoid matching 'para' (explanatory questions in spanish)
+    if re.search(r'\b(det[ée]n|para(?!\s+(que|qué))|stop|frena|alto)\b', text):
         return 'Stop_robot'
 
     if re.search(r'\b(t[óo]picos?|topics?|lista\s+de\s+t[óo]picos?)\b', text):
