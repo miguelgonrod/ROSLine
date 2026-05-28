@@ -4,7 +4,7 @@
 [![OS](https://img.shields.io/badge/OS-Ubuntu_24.04-0078D4)](#)
 [![ROS](https://img.shields.io/badge/ROS_Version-Jazzy_Jalisco-0078D4)](#)
 [![CPU](https://img.shields.io/badge/CPU-x86%2C%20x64%2C%20ARM%2C%20ARM64-FF8C00)](#)
-[![GitHub release](https://img.shields.io/badge/release-v2.0.0-4493f8)](#)
+[![GitHub release](https://img.shields.io/badge/release-v2.1.0-4493f8)](#)
 [![GitHub last commit](https://img.shields.io/badge/last_commit-may_2026-96981c)](#)
 
 ⭐ Star us on GitHub — it motivates us a lot!
