@@ -7,7 +7,7 @@ package_name = 'ros_line'
 
 setup(
     name=package_name,
-    version='1.0.0',
+    version='2.0.0',
     packages=find_packages(exclude=['test']),
     data_files=[
         ('share/ament_index/resource_index/packages',
@@ -21,9 +21,11 @@ setup(
     install_requires=[
     ],
     zip_safe=True,
-    maintainer='miguel',
-    maintainer_email='miguelgonrod2004@gmail.com',
-    description='ROSLine: Agente conversacional inteligente para ROS 2 via WhatsApp',
+    maintainer='Miguel Angel Gonzalez Rodriguez',
+    maintainer_email='miguel_gonzalezr@ieee.org',
+    description="""ROSLine is a natural language interface that bridges WhatsApp and ROS 2.
+        It allows users to control and monitor ROS-based robots through chat commands
+        powered by Gemini and a lightweight reasoning layer.""",
     license='Apache License 2.0',
     extras_require={
         'test': [
