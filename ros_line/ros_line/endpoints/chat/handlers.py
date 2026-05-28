@@ -2,15 +2,119 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, TYPE_CHECKING
 
 from ros_line.endpoints.actions.agent import RosAgent
 from ros_line.endpoints.chat.context import append_message, get_ros_agent
-from ros_line.endpoints.chat.parsing import extract_robot_name_with_llm
+from ros_line.endpoints.chat.parsing import extract_robot_name, extract_robot_name_with_llm
 from ros_line.endpoints.dto.message_dto import ChatRequestDTO
 
 if TYPE_CHECKING:
     from langchain_google_genai import ChatGoogleGenerativeAI
+
+
+def _extract_cmd_vel_namespaces(topics_output: str) -> list[str]:
+    """
+    Extract the namespaces from movement topics.
+
+    :param topics_output: All the active topics.
+    :type topics_output: str
+
+    :return: list of available namespaces
+    :rtype: list[str]
+    """
+    namespaces: list[str] = []
+    for raw_topic in topics_output.splitlines():
+        topic = raw_topic.strip()
+        if not topic or 'cmd_vel' not in topic:
+            continue
+        if topic.startswith('/'):
+            parts = [part for part in topic.split('/') if part]
+            if len(parts) >= 2 and 'cmd_vel' in parts[-1]:
+                namespaces.append(parts[-2])
+    return list(dict.fromkeys(namespaces))
+
+
+def _infer_namespace_with_llm(
+    llm: 'ChatGoogleGenerativeAI | Any',
+    user_input: str,
+    available_namespaces: list[str],
+) -> str:
+    """
+    Find the required namespace using LLM.
+
+    :param llm: LLM client or interface used to extract information when needed.
+    :type llm: ChatGoogleGenerativeAI or Any
+    :param user_input: Original user text that triggered the intent.
+    :type user_input: str
+    :param available_namespaces: List with all available namespaces.
+    :type available_namespaces: list[str]
+
+    :return: Required namespace
+    :rtype: str
+    """
+    if not available_namespaces:
+        return ''
+
+    prompt_text = (
+        'Selecciona el namespace ROS que mejor coincide con la intención del usuario. '
+        'Debes responder SOLO con uno de estos valores exactos o con NONE.\n\n'
+        f'Namespaces disponibles: {", ".join(available_namespaces)}\n'
+        f'Mensaje del usuario: {user_input}\n\n'
+        'Respuesta:'
+    )
+
+    try:
+        result = llm.invoke(prompt_text)
+        namespace = getattr(result, 'content', str(result)).strip()
+        namespace = namespace.strip().strip(". ,;:!\"'[]{}()")
+        if not namespace or namespace.upper() == 'NONE':
+            return ''
+        if namespace in available_namespaces:
+            return namespace
+        lowered = namespace.lower()
+        for candidate in available_namespaces:
+            if candidate.lower() == lowered:
+                return candidate
+    except Exception as exc:
+        print(f'Error inferiendo namespace con LLM: {exc}')
+
+    return ''
+
+
+def _fallback_namespace_by_index(robot_name: str, available_namespaces: list[str]) -> str:
+    """
+    Find the required namespace using regex.
+
+    :param robot_name: Robot name said by the user.
+    :type robot_name: str
+    :param available_namespaces: List with all available namespaces.
+    :type available_namespaces: list[str]
+
+    :return: Required namespace
+    :rtype: str
+    """
+    if not robot_name:
+        return ''
+
+    index_match = re.search(r'(\d+)', robot_name)
+    if not index_match:
+        return ''
+
+    robot_index = index_match.group(1)
+    candidates = [
+        f'tb{robot_index}',
+        f'turtlebot{robot_index}',
+        f'robot{robot_index}',
+    ]
+
+    for namespace in available_namespaces:
+        lowered = namespace.lower()
+        if lowered in candidates or lowered.endswith(robot_index):
+            return namespace
+
+    return ''
 
 
 def resolve_cmd_vel_topic(ros_agent: RosAgent | None,
@@ -124,6 +228,21 @@ def handle_move_robot(
         robot_specified = bool(robot_name)
 
     cmd_vel_topic, topic_status = resolve_cmd_vel_topic(ros_agent, robot_name)
+
+    if ros_agent and topic_status == 'robot_not_found':
+        topics_output = ros_agent.list_topics()
+        if topics_output and not topics_output.startswith('Error'):
+            namespaces = _extract_cmd_vel_namespaces(topics_output)
+            inferred_namespace = _fallback_namespace_by_index(robot_name, namespaces)
+            if not inferred_namespace:
+                inferred_namespace = _infer_namespace_with_llm(llm, user_input, namespaces)
+
+            if inferred_namespace:
+                cmd_vel_topic = f'/{inferred_namespace}/cmd_vel'
+                topic_status = 'found_by_inference'
+                robot_name = inferred_namespace
+                robot_specified = True
+
     twist_message = _build_twist_message(linear_x, linear_y,
                                          angular_z, linear_z=linear_z,
                                          angular_x=angular_x, angular_y=angular_y)
@@ -217,10 +336,27 @@ def handle_stop_robot(
     :rtype: dict
     """
     ros_agent = get_ros_agent()
-    robot_name = extract_robot_name_with_llm(llm, user_input)
+    robot_name = extract_robot_name(user_input)
+    if not robot_name:
+        robot_name = extract_robot_name_with_llm(llm, user_input)
     robot_specified = bool(robot_name)
 
     cmd_vel_topic, topic_status = resolve_cmd_vel_topic(ros_agent, robot_name)
+
+    if ros_agent and topic_status == 'robot_not_found':
+        topics_output = ros_agent.list_topics()
+        if topics_output and not topics_output.startswith('Error'):
+            namespaces = _extract_cmd_vel_namespaces(topics_output)
+            inferred_namespace = _fallback_namespace_by_index(robot_name, namespaces)
+            if not inferred_namespace:
+                inferred_namespace = _infer_namespace_with_llm(llm, user_input, namespaces)
+
+            if inferred_namespace:
+                cmd_vel_topic = f'/{inferred_namespace}/cmd_vel'
+                topic_status = 'found_by_inference'
+                robot_name = inferred_namespace
+                robot_specified = True
+
     # stop: ensure we set all axes to zero
     twist_message = _build_twist_message(0.0, 0.0, 0.0, linear_z=0.0, angular_x=0.0, angular_y=0.0)
 
