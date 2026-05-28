@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
 
 from launch import LaunchDescription
-from launch.actions import ExecuteProcess
+from launch_ros.actions import Node
 
 
 def generate_launch_description():
-
-    # Process to execute FastAPI server.
-    fastapi_server = ExecuteProcess(
-        cmd=['python3', '-m', 'ros_line.main'],
-        cwd='/home/miguel/ros2_ws/src/ros_line',
+    fastapi_server = Node(
+        package='ros_line',
+        executable='rosline_agent',
         output='screen',
-        name='rosline_fastapi_server'
+        name='rosline_fastapi_server',
     )
 
     return LaunchDescription([
