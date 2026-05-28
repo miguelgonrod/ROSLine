@@ -2,9 +2,9 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>ros_line</name>
-  <version>1.0.0</version>
+  <version>2.0.0</version>
   <description>ROSLine is a natural language interface that bridges WhatsApp and ROS 2. It allows users to control and monitor ROS-based robots through chat commands powered by Gemini and a lightweight reasoning layer.</description>
-  <maintainer email="miguelgonrod2004@gmail.com">Miguel Angel González Rodríguez</maintainer>
+  <maintainer email="miguel_gonzalezr@ieee.org">Miguel Angel González Rodríguez</maintainer>
   <license>BSD 3-Clause License</license>
 
   <depend>rclpy</depend>

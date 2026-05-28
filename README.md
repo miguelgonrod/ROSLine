@@ -157,6 +157,28 @@ The ROS 2 node exposes the following endpoints:
 - `GET /api/hello` - Health check
 - `POST /api/business` - Business logic endpoint
 
+## Code Quality
+
+The Python package follows the same linting rules used in the Padawan project:
+
+- `flake8` with a maximum line length of 120
+- `E203` ignored for Black-compatible slicing spacing
+- `pep257` docstring checks through the existing `ament_pep257` test
+
+To run the checks locally from the repository root:
+
+```bash
+python3 -m pytest ros_line/test
+```
+
+To make Git run them before commits and pushes, enable the repo hooks once:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+GitHub Actions runs the same Python checks on every push and pull request.
+
 ### Supported Message Types
 
 - **Text messages**: Natural language commands
