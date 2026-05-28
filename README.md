@@ -4,9 +4,8 @@
 [![OS](https://img.shields.io/badge/OS-Ubuntu_24.04-0078D4)](#)
 [![ROS](https://img.shields.io/badge/ROS_Version-Jazzy_Jalisco-0078D4)](#)
 [![CPU](https://img.shields.io/badge/CPU-x86%2C%20x64%2C%20ARM%2C%20ARM64-FF8C00)](#)
-[![GitHub release](https://img.shields.io/badge/release-v1.0.0-4493f8)](#)
-[![GitHub release date](https://img.shields.io/badge/release_date-october_2025-96981c)](#)
-[![GitHub last commit](https://img.shields.io/badge/last_commit-october_2025-96981c)](#)
+[![GitHub release](https://img.shields.io/badge/release-v2.0.0-4493f8)](#)
+[![GitHub last commit](https://img.shields.io/badge/last_commit-may_2026-96981c)](#)
 
 ⭐ Star us on GitHub — it motivates us a lot!
 
@@ -17,7 +16,6 @@
 - [How to Build](#-how-to-build)
 - [WhatsApp Setup](#-whatsapp-setup)
 - [Usage](#-usage)
-- [Configuration](#-configuration)
 - [License](#-license)
 
 ## 🚀 About
@@ -47,16 +45,16 @@ To build the packages (only if you are using ROS 2 Jazzy and Python 3.12), follo
 ### Prerequisites
 - ROS 2 Jazzy Jalisco
 - Python 3.12
-- Node.js and npm/yarn
+- Node.js 20.x and npm/yarn
 - Google Gemini API key
-- Supabase account (optional)
 
 ### ROS 2 Package Setup
 
 ```shell
-# First clone the repository in your workspace
+# First clone the repository in your workspace and create a symlink
 cd ~/ros2_ws/src
 git clone https://github.com/miguelgonrod/ROSLine
+ln -s /home/$USER/ros2_ws/src/ROSLine/ros_line /home/$USER/ros2_ws/src
 
 # Install Python dependencies for ROS 2 node
 cd ROSLine/ros_line/resource
@@ -69,7 +67,7 @@ source install/setup.bash
 ```
 
 ### WhatsApp Client Setup
-
+⚠️ WARNING: This package uses the Baileys library to connect to WhatsApp. Using it may result in your WhatsApp account being restricted or banned. Use it at your own risk. We strongly recommend using the official WhatsApp Business API, or testing with a separate WhatsApp Business account.
 ```shell
 # Navigate to WhatsApp client directory
 cd ~/ros2_ws/src/ROSLine/ros-line-whatsapp-qr
@@ -79,6 +77,10 @@ npm install
 
 # Build TypeScript code (if needed)
 npx tsx src/index.ts
+```
+If npm is not working as expected, is because you need to install nodejs 20.x and this is not supported by default by Ubuntu 24.04. If this is your case run this command before `sudo apt install`:
+```shell
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 ```
 
 ### Environment Configuration
@@ -94,10 +96,17 @@ touch .env
 Add your API keys and configuration (you should use **ros_line/resource/.env.example** as a template):
 ```env
 GOOGLE_API_KEY=[Your API KEY]
+GOOGLE_APPLICATION_CREDENTIALS=[Absolute route to your json API KEY]
 
 ROS_DOMAIN_ID=0
 ROS_DISTRO=jazzy
 ```
+`GOOGLE_API_KEY` is needed to connect to Gemini API. This API KEY is created in [Google AI Studio](https://aistudio.google.com/app/api-keys)
+`GOOGLE_APPLICATION_CREDENTIALS` is needed to connect to Google TTS. To create this API Credentials you need to follow this steps:
+1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+2. Go to "APIs and services > Library" and install `Cloud Speech-to-Text API`
+3. Go to "Credentials", click "Create credentials", create a `Service account` and give it the name you prefer. (No more configurations needed)
+4. Click on the new Service account, go to "Keys", create a new "JSON" key and save it preferably in `ROSLine/ros_line/resource`. (Don't forget to edit the `.env`)
 
 ## 📱 WhatsApp Setup
 
@@ -143,7 +152,7 @@ Once both services are running, you can send natural language commands through W
 - "Turn left 90 degrees"
 - "Stop the robot"
 - "Get robot status"
-- "Take a photo"
+- "Analize this rqt graph"
 
 The system will interpret your commands and execute the corresponding ROS 2 actions.
 
@@ -151,46 +160,15 @@ The system will interpret your commands and execute the corresponding ROS 2 acti
 
 ### API Endpoints
 
-The ROS 2 node exposes the following endpoints:
+The ROS 2 node exposes the following endpoint:
 
-- `POST /api/chat_v1.1` - Main chat interface
-- `GET /api/hello` - Health check
-- `POST /api/business` - Business logic endpoint
-
-## Code Quality
-
-The Python package follows the same linting rules used in the Padawan project:
-
-- `flake8` with a maximum line length of 120
-- `E203` ignored for Black-compatible slicing spacing
-- `pep257` docstring checks through the existing `ament_pep257` test
-
-To run the checks locally from the repository root:
-
-```bash
-python3 -m pytest ros_line/test
-```
-
-To make Git run them before commits and pushes, enable the repo hooks once:
-
-```bash
-git config core.hooksPath .githooks
-```
-
-GitHub Actions runs the same Python checks on every push and pull request.
+- `POST /api/chat_webservice` - Main chat interface
 
 ### Supported Message Types
 
 - **Text messages**: Natural language commands
 - **Image messages**: Visual input for robot perception
 - **Audio messages**: Voice commands (transcribed to text)
-
-### ROS 2 Integration
-
-The system can interact with standard ROS 2 interfaces:
-- `geometry_msgs/Twist` for robot movement
-- `std_msgs/String` for status messages
-- Custom service calls for specific robot functions
 
 ## 📃 License
 

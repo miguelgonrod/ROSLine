@@ -21,7 +21,15 @@ jobs:
           required-ros-distributions: jazzy
 
       - name: Install pytest
-        run: sudo apt-get update && sudo apt-get install -y python3-pytest
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            python3-pytest \
+            ros-jazzy-ament-copyright \
+            ros-jazzy-ament-flake8 \
+            ros-jazzy-ament-pep257
 
       - name: Run Python checks
-        run: python3 -m pytest ros_line/test
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          python3 -m pytest ros_line/test
