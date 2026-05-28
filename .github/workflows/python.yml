@@ -30,4 +30,6 @@ jobs:
             ros-jazzy-ament-pep257
 
       - name: Run Python checks
-        run: python3 -m pytest ros_line/test
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          python3 -m pytest ros_line/test
