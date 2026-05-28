@@ -6,7 +6,7 @@ type ChatResponse = {
 };
 
 async function callBackend(message: string, userId: string): Promise<ChatResponse> {
-    const endpoint = process.env.BACKEND_URL || "http://127.0.0.1:8000/api/chat_v2.0";
+    const endpoint = process.env.BACKEND_URL || "http://127.0.0.1:8000/api/chat_v1.1";
     const response = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -15,13 +15,13 @@ async function callBackend(message: string, userId: string): Promise<ChatRespons
     if (!response.ok) {
         throw new Error(`Backend error: ${response.status} ${response.statusText}`);
     }
-    return response.json();
+    return (await response.json()) as ChatResponse;
 }
 
 async function main() {
     const userId = process.env.USER_ID || "cli-user";
     console.log("Simple Chat CLI (type 'exit' to quit)");
-    console.log(`Using backend: ${process.env.BACKEND_URL || "http://127.0.0.1:8000/api/chat_v2.0"}`);
+    console.log(`Using backend: ${process.env.BACKEND_URL || "http://127.0.0.1:8000/api/chat_v1.1"}`);
 
     const rl = readline.createInterface({
         input: process.stdin,

@@ -6,7 +6,9 @@ Classes:
 """
 
 import os
+from pathlib import Path
 
+from ament_index_python.packages import get_package_share_directory
 from dotenv import load_dotenv
 from fastapi import APIRouter
 from fastapi_utils.cbv import cbv
@@ -38,9 +40,16 @@ from ros_line.endpoints.chat.vision import (
 from ros_line.endpoints.dto.message_dto import ChatRequestDTO
 
 # --- Environment variables configuration ---
-dotenv_path = (os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-                            'resource', '.env'))
-load_dotenv(dotenv_path)
+current_file = Path(__file__).resolve()
+dotenv_candidates = [
+    current_file.parents[3] / 'resource' / '.env',
+    current_file.parents[2] / 'resource' / '.env',
+    Path(get_package_share_directory('ros_line')) / 'config' / '.env',
+]
+for dotenv_path in dotenv_candidates:
+    if dotenv_path.is_file():
+        load_dotenv(dotenv_path)
+        break
 
 
 chat_webservice_api_router = APIRouter()
@@ -59,8 +68,13 @@ class ChatWebService:
     async def chat_with_structure_output(self, request: ChatRequestDTO):
         api_key = os.getenv('GOOGLE_API_KEY')
         if not api_key:
-            api_key = input('Por favor, ingrese su API KEY de Google (GOOGLE_API_KEY): ')
-            os.environ['GOOGLE_API_KEY'] = api_key
+            return {
+                'userintention': 'Other',
+                'reply': (
+                    "GOOGLE_API_KEY isn't configured. "
+                    'Define the key in `ros_line/resource/.env` and launch the node again.'
+                ),
+            }
 
         llm = ChatGoogleGenerativeAI(model='gemini-2.5-flash')
 
@@ -287,14 +301,56 @@ class ChatWebService:
             info_type = info_data.get('info_type', 'general_info')
             target_name = info_data.get('target_name', '')
 
+            if (
+                    info_type in ['topic_info', 'node_info', 'service_info']
+                    and target_name
+                    and not target_name.startswith('/')):
+                target_name = f'/{target_name}'
+
             ros_agent = _get_ros_agent()
+
+            inferred_info_type = info_type
+            if (
+                    ros_agent and target_name and inferred_info_type == 'general_info'
+                    and target_name.startswith('/')):
+                try:
+                    topics_output = ros_agent.list_topics() or ''
+                    nodes_output = ros_agent.list_nodes() or ''
+                    services_output = ros_agent.list_services() or ''
+
+                    topics = [t.strip() for t in topics_output.splitlines() if t.strip()]
+                    nodes = [n.strip() for n in nodes_output.splitlines() if n.strip()]
+                    services = [s.strip() for s in services_output.splitlines() if s.strip()]
+
+                    def matches(name_list, target):
+                        for item in name_list:
+                            if (item == target
+                                    or item == target.lstrip('/')
+                                    or item.rstrip('/') == target):
+                                return True
+                        return False
+
+                    if matches(topics, target_name):
+                        inferred_info_type = 'topic_info'
+                    elif matches(nodes, target_name):
+                        inferred_info_type = 'node_info'
+                    elif matches(services, target_name):
+                        inferred_info_type = 'service_info'
+                except Exception:
+                    inferred_info_type = info_type
+
+            if (inferred_info_type == 'topic_info'
+                    and target_name
+                    and not target_name.startswith('/')):
+                target_name = f'/{target_name}'
+
             if (
                 ros_agent
                 and target_name
-                and info_type in ['topic_info', 'node_info', 'service_info']
+                and inferred_info_type in ['topic_info', 'node_info', 'service_info']
             ):
                 try:
-                    ros_type = info_type.replace('_info', '')
+                    ros_type = inferred_info_type.replace('_info', '')
                     info_output = ros_agent.get_info(ros_type, target_name)
 
                     reply_text = (
@@ -310,7 +366,8 @@ class ChatWebService:
                         f'Error al obtener información sobre {target_name}:\n'
                         f'Error: {str(e)}'
                     )
-                    ros_command = f"ros2 {info_type.replace('_info', '')} info {target_name}"
+                    ros_command = f"""ros2 {inferred_info_type.replace('_info', '')}
+                    info {target_name}"""
                     status = 'error'
             else:
                 reply_text = (

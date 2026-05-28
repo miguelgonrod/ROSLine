@@ -8,6 +8,10 @@ config_files = [
     path for path in glob('resource/*')
     if os.path.basename(path) != package_name
 ]
+hidden_config_files = [
+    path for path in glob('resource/.*')
+    if os.path.basename(path) not in {'.', '..'}
+]
 
 setup(
     name=package_name,
@@ -20,7 +24,7 @@ setup(
         # Incluir archivos de launch
         (os.path.join('share', package_name, 'launch'), glob('launch/*.py')),
         # Incluir archivos de configuración
-        (os.path.join('share', package_name, 'config'), config_files),
+        (os.path.join('share', package_name, 'config'), config_files + hidden_config_files),
     ],
     install_requires=[
     ],
@@ -41,7 +45,6 @@ setup(
     entry_points={
         'console_scripts': [
             'rosline_agent = ros_line.main:main',
-            'ros_fastapi_node = ros_line.ros_fastapi_node:main',
         ],
     },
 )

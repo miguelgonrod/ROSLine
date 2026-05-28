@@ -27,6 +27,12 @@ import { tmpdir } from "os";
 const envPath = resolve(__dirname, "../../ros_line/resource/.env");
 dotenv.config({ path: envPath });
 
+const defaultBackendUrl = "http://127.0.0.1:8000/api/chat_v1.1";
+
+function getBackendUrl(): string {
+  return process.env.BACKEND_URL || defaultBackendUrl;
+}
+
 if (process.env.GOOGLE_APPLICATION_CREDENTIALS?.startsWith("~")) {
   process.env.GOOGLE_APPLICATION_CREDENTIALS = process.env.GOOGLE_APPLICATION_CREDENTIALS.replace(
     /^~/,
@@ -293,7 +299,7 @@ class WhatsAppHandler {
           const controller = new AbortController();
           const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 segundos timeout
 
-          fetch("http://127.0.0.1:8000/api/chat_v1.1", {
+          fetch(getBackendUrl(), {
             method: "POST",
             headers: {
               "Content-Type": "application/json",

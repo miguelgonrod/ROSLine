@@ -100,7 +100,9 @@ def build_classify_text(history_text: str, user_input: str) -> str:
         "Usa 'List_topics' cuando el usuario pide listar los tópicos activos. "
         "Usa 'List_nodes' cuando quiere ver los nodos activos. "
         "Usa 'List_services' cuando solicita ver los servicios disponibles. "
-        "Usa 'Get_info' cuando pide información sobre un tópico, nodo o parámetro específico. "
+        "Usa 'Get_info' cuando pide información sobre un tópico, nodo o servicio específico, "
+        """por ejemplo: 'información del tópico rosout',
+        'info del nodo /turtlesim' o 'datos del servicio /spawn'. """
         """Usa 'Move_robot' cuando da una orden de movimiento,
         por ejemplo avanzar, girar o desplazarse a una posición. """
         "Usa 'Stop_robot' cuando solicita detener el robot o cancelar un movimiento. "
