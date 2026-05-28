@@ -9,8 +9,8 @@ from ros_line.endpoints.actions.agent import RosAgent
 
 
 _memory_store: dict[str, list[dict[str, str]]] = {}
-_history_window_size = int(os.getenv("ROSLINE_HISTORY_WINDOW_SIZE", "8"))
-_max_memory_messages = int(os.getenv("ROSLINE_MAX_MEMORY_MESSAGES", "24"))
+_history_window_size = int(os.getenv('ROSLINE_HISTORY_WINDOW_SIZE', '8'))
+_max_memory_messages = int(os.getenv('ROSLINE_MAX_MEMORY_MESSAGES', '24'))
 _ros_agent = None
 _ros_thread = None
 
@@ -18,7 +18,7 @@ _ros_thread = None
 def get_history(user_id: str) -> list[dict[str, str]]:
     """
     Get the chat history.
-        
+
     :param user_id: Unique code of the user for the LLM.
     :type user_id: str
 
@@ -33,7 +33,7 @@ def get_history(user_id: str) -> list[dict[str, str]]:
 def append_message(user_id: str, role: str, content: str) -> None:
     """
     Append an specific message to the history.
-        
+
     :param user_id: Unique code of the user for the LLM.
     :type user_id: str
     :param role: Role of the message sender in the chat.
@@ -42,7 +42,7 @@ def append_message(user_id: str, role: str, content: str) -> None:
     :type content: str
     """
     history = get_history(user_id)
-    history.append({"role": role, "content": content})
+    history.append({'role': role, 'content': content})
     if len(history) > _max_memory_messages:
         del history[:-_max_memory_messages]
 
@@ -50,7 +50,7 @@ def append_message(user_id: str, role: str, content: str) -> None:
 def history_as_text(user_id: str, limit: int | None = None) -> str:
     """
     Print the history as an unique text.
-        
+
     :param user_id: Unique code of the user for the LLM.
     :type user_id: str
     :param limit: Size limit to the history.
@@ -65,11 +65,11 @@ def history_as_text(user_id: str, limit: int | None = None) -> str:
         history = history[-limit:]
 
     for msg in history:
-        if msg.get("role") == "human":
+        if msg.get('role') == 'human':
             lines.append(f"Usuario: {msg.get('content', '')}")
-        elif msg.get("role") == "ai":
+        elif msg.get('role') == 'ai':
             lines.append(f"Asistente: {msg.get('content', '')}")
-    return "\n".join(lines)
+    return '\n'.join(lines)
 
 
 def get_ros_agent():
@@ -82,7 +82,7 @@ def get_ros_agent():
             _ros_thread = threading.Thread(target=rclpy.spin, args=(_ros_agent,), daemon=True)
             _ros_thread.start()
         except Exception as exc:
-            print(f"Error al inicializar el agente ROS: {exc}")
+            print(f'Error al inicializar el agente ROS: {exc}')
             _ros_agent = None
 
     return _ros_agent
@@ -90,7 +90,7 @@ def get_ros_agent():
 
 def history_window_size() -> int:
     """
-    Gives the complete size of the chat history.
+    Give the complete size of the chat history.
 
     :return: Size of the history window.
     :rtype: int

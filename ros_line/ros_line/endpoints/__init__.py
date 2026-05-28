@@ -1,1 +1,1 @@
-"""Endpoint of the ROSLine API"""
+"""Endpoint of the ROSLine API."""
