@@ -3,12 +3,14 @@
   "private": true,
   "dependencies": {
     "@whiskeysockets/baileys": "^6.7.20",
+    "@google-cloud/speech": "^6.7.0",
+    "dotenv": "^16.4.5",
     "qrcode": "^1.5.4",
     "tsx": "^4.19.4"
   },
   "devDependencies": {
     "@types/qrcode": "^1.5.5",
-    "typescript": "^5.8.3"
+    "typescript": "^5.9.3"
   },
   "scripts": {
     "start:wa": "yarn tsx src/index.ts",
